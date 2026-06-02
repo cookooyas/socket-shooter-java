@@ -23,34 +23,43 @@ const remotePlayers = new Map();
 const remoteBullets = new Map();
 let myClientId = null;
 
-// FPS 시선 제어 변수
+// 애니메이션 믹서 및 액션 맵 관리 장부
+let mixers = [];
+const playerActions = new Map();
+const clock = new THREE.Clock();
+
+// FPS 마우스 시선 제어 변수
 let yaw = 0;
 let pitch = 0;
 const cameraDirection = new THREE.Vector3();
 
 // ==========================================
-// ⭐️ [3D 마스터 모델 로드 파트]
+// 2. 3D 마스터 모델 로드 (모션 내장 스킨)
 // ==========================================
 const gltfLoader = new GLTFLoader();
-const modelUrl = '/Astronaut.glb'; // 로컬 서버 정적 경로
-let masterAstronautModel = null;   // 모든 플레이어가 복사해서 쓸 원본 모델 보관함
+const modelUrl = 'https://threejs.org/examples/models/gltf/RobotExpressive/RobotExpressive.glb';
+let masterAstronautModel = null;
 
-console.log("[3D 로더] 로컬 서버에서 우주비행사 원본 모델 로드 시작...");
+console.log("[3D 로더] 원격 서버에서 멀티 애니메이션 내장 모델 로드 시작...");
 gltfLoader.load(
     modelUrl,
     (gltf) => {
         masterAstronautModel = gltf.scene;
-        // ⭐️ 모델 크기를 기존 0.4에서 0.6으로 조금 더 키워 듬직하게 만듭니다.
-        masterAstronautModel.scale.set(0.6, 0.6, 0.6);
+        masterAstronautModel.scale.set(0.3, 0.3, 0.3);
         masterAstronautModel.position.set(0, 0, 0);
-        console.log("[3D 로더] 원본 스킨 준비 완료!");
+
+        if (gltf.animations && gltf.animations.length > 0) {
+            masterAstronautModel.animations = gltf.animations;
+            console.log("[3D 로더] 찾은 모션 리스트:", gltf.animations.map(a => a.name));
+        }
+        console.log("[3D 로더] 원본 마스터 스킨 준비 완료!");
     },
     undefined,
-    (error) => console.error("[3D 로더] 에러 발생:", error)
+    (error) => console.error("[3D 로더] 모델 로딩 에러:", error)
 );
 
 // ==========================================
-// 2. 웹소켓 실시간 데이터 수신 및 캐릭터 스와프
+// 3. 웹소켓 데이터 수신 및 '실시간 상태 머신' 연산
 // ==========================================
 const socket = new WebSocket(`ws://${window.location.host}/ws/game`);
 
@@ -60,7 +69,7 @@ socket.onmessage = (event) => {
     if (payload.startsWith("INIT")) {
         const tokens = payload.split(',');
         myClientId = tokens[1].trim();
-        document.getElementById('my-id').innerText = `내 ID: ${myClientId} (접속 완료)`;
+        document.getElementById('my-id').innerText = `내 ID: ${myClientId} (접속 및 인증 완료)`;
         return;
     }
 
@@ -84,11 +93,9 @@ socket.onmessage = (event) => {
 
                 infoText += `플레이어 [${id.substring(0,5)}]: HP ${hpStr}<br/>`;
 
-                // A. 처음 접속한 플레이어라면 뼈대 그룹 생성
                 if (!remotePlayers.has(id)) {
                     const playerGroup = new THREE.Group();
 
-                    // ⭐️ 모델이 아직 로드 중일 때 보여줄 임시 상자 박스
                     const dummyGeo = new THREE.BoxGeometry(1.0, 1.8, 1.0);
                     const dummyMat = new THREE.MeshStandardMaterial({
                         color: id === myClientId ? 0x00ff00 : 0xff0000,
@@ -96,49 +103,93 @@ socket.onmessage = (event) => {
                     });
                     const dummyMesh = new THREE.Mesh(dummyGeo, dummyMat);
                     dummyMesh.position.y = 0.9;
-                    dummyMesh.name = "skin"; // 나중에 지우기 쉽게 이름표 부착
+                    dummyMesh.name = "skin";
                     playerGroup.add(dummyMesh);
 
                     scene.add(playerGroup);
                     remotePlayers.set(id, playerGroup);
+
+                    playerGroup.userData = { lastX: posX, lastZ: posZ, currentGroupState: "Idle" };
                 }
 
                 const targetGroup = remotePlayers.get(id);
 
-                // ⭐️ [이동/회전 동기화] 이제 우주비행사(혹은 임시 박스)가 내 조작대로 움직입니다!
-                targetGroup.position.set(posX, posY, posZ);
+                const deltaX = posX - targetGroup.userData.lastX;
+                const deltaZ = posZ - targetGroup.userData.lastZ;
+                const distanceMoved = Math.sqrt(deltaX * deltaX + deltaZ * deltaZ);
 
-                // 3D 모델의 실제 앞방향과 맞추기 위해 180도(Math.PI) 회전 오프셋 추가
+                targetGroup.userData.lastX = posX;
+                targetGroup.userData.lastZ = posZ;
+
+                targetGroup.position.set(posX, posY, posZ);
                 targetGroup.rotation.y = playerYaw;
 
-                // ⭐️ [실시간 스와프 핵심]
-                // 마스터 모델 다운로드가 끝났고, 아직 이 캐릭터가 임시 상자(wireframe)를 들고 있다면?
                 if (masterAstronautModel && targetGroup.getObjectByName("skin") && targetGroup.getObjectByName("skin").isMesh) {
-                    // 1. 기존 임시 상자 제거
                     const oldSkin = targetGroup.getObjectByName("skin");
                     targetGroup.remove(oldSkin);
 
-                    // 2. 원본 우주비행사 모델을 똑같이 복사(Clone)
                     const newSkin = masterAstronautModel.clone();
                     newSkin.name = "skin";
 
-                    // 3. 내 1인칭 화면에서는 내 몸통 모델이 눈을 가리지 않게 투명 처리 (상대방 화면엔 잘 보임)
                     if (id === myClientId) {
                         newSkin.traverse((child) => {
-                            if (child.isMesh) {
-                                child.layers.set(1); // 내 카메라 레이어에서 숨기기
-                            }
+                            if (child.isMesh) child.layers.set(1);
                         });
                     }
 
-                    // 4. 캐릭터 그룹에 진짜 우주비행사 스킨 주입!
                     targetGroup.add(newSkin);
-                    console.log(`[스킨 엔진] 유저 [${id.substring(0,5)}]에게 우주비행사 슈트를 장착했습니다.`);
+
+                    if (masterAstronautModel.animations && masterAstronautModel.animations.length > 0) {
+                        const mixer = new THREE.AnimationMixer(newSkin);
+                        mixer.playerId = id;
+                        mixers.push(mixer);
+
+                        const actions = {};
+                        masterAstronautModel.animations.forEach((clip) => {
+                            actions[clip.name] = mixer.clipAction(clip);
+                        });
+
+                        playerActions.set(id, actions);
+
+                        if (actions["Idle"]) actions["Idle"].play();
+                    }
+                    console.log(`[애니메이션 엔진] 유저 [${id.substring(0,5)}] 전용 14종 상태머신 빌드 완료.`);
                 }
 
-                // 1인칭 카메라 위치 고정 (눈높이 보정)
+                const actions = playerActions.get(id);
+                if (actions) {
+                    let targetState = "Idle";
+                    if (distanceMoved > 0.02) {
+                        targetState = actions["Walking"] ? "Walking" : "Running";
+                    }
+
+                    if (targetGroup.userData.currentGroupState !== targetState) {
+                        const currentAction = actions[targetGroup.userData.currentGroupState];
+                        const nextAction = actions[targetState];
+
+                        if (currentAction && nextAction) {
+                            nextAction.reset();
+                            nextAction.play();
+                            currentAction.crossFadeTo(nextAction, 0.15, true);
+                        }
+                        targetGroup.userData.currentGroupState = targetState;
+                    }
+                }
+
+                // ⭐️ [시점 낮추기 핵심 보정]
+                // 기존 posY + 1.5 (머리 위 허공) -> posY + 0.9 (모델 눈높이에 딱 맞춤)
                 if (id === myClientId) {
-                    camera.position.set(posX, posY + 1.6, posZ);
+                    camera.position.set(posX, posY + 0.9, posZ);
+                }
+
+                const currentSkin = targetGroup.getObjectByName("skin");
+                if (currentSkin) {
+                    currentSkin.traverse((child) => {
+                        if (child.isMesh) {
+                            child.material.transparent = true;
+                            child.material.opacity = parseInt(hpStr) <= 0 ? 0.15 : 1.0;
+                        }
+                    });
                 }
             }
             else if (type === 'B') {
@@ -159,9 +210,13 @@ socket.onmessage = (event) => {
             }
         }
 
-        // 가비지 컬렉터
         for (const id of remotePlayers.keys()) {
-            if (!activePlayerIds.has(id)) { scene.remove(remotePlayers.get(id)); remotePlayers.delete(id); }
+            if (!activePlayerIds.has(id)) {
+                scene.remove(remotePlayers.get(id));
+                remotePlayers.delete(id);
+                mixers = mixers.filter(m => m.playerId !== id);
+                playerActions.delete(id);
+            }
         }
         for (const id of remoteBullets.keys()) {
             if (!activeBulletIds.has(id)) { scene.remove(remoteBullets.get(id)); remoteBullets.delete(id); }
@@ -171,7 +226,7 @@ socket.onmessage = (event) => {
 };
 
 // ==========================================
-// 3. Pointer Lock (FPS 마우스 시선 연동)
+// 4. Pointer Lock (FPS 마우스 시선 연동)
 // ==========================================
 renderer.domElement.addEventListener('click', () => {
     renderer.domElement.requestPointerLock();
@@ -199,7 +254,7 @@ document.addEventListener('mousemove', (event) => {
 });
 
 // ==========================================
-// 4. 키보드 입력 관리 (WASD & Space)
+// 5. 키보드 입력 및 송신계 (WASD)
 // ==========================================
 const inputState = { w: 0, a: 0, s: 0, d: 0 };
 
@@ -228,7 +283,7 @@ window.addEventListener('keyup', (e) => {
 });
 
 // ==========================================
-// 5. FPS 발사 연산 패킷 전송
+// 6. 슈팅 패킷 전송
 // ==========================================
 renderer.domElement.addEventListener('mousedown', (event) => {
     if (document.pointerLockElement !== renderer.domElement) return;
@@ -239,10 +294,24 @@ renderer.domElement.addEventListener('mousedown', (event) => {
 });
 
 // ==========================================
-// 6. 메인 프레임 애니메이션 루프
+// 7. 메인 프레임 애니메이션 루프
 // ==========================================
 function animate() {
     requestAnimationFrame(animate);
+
+    try {
+        if (typeof clock !== 'undefined' && mixers.length > 0) {
+            const delta = clock.getDelta();
+            for (let i = 0; i < mixers.length; i++) {
+                if (mixers[i] && typeof mixers[i].update === 'function') {
+                    mixers[i].update(delta);
+                }
+            }
+        }
+    } catch (e) {
+        console.error("애니메이션 프레임 업데이트 에러 가드:", e);
+    }
+
     renderer.render(scene, camera);
 }
 animate();

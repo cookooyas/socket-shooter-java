@@ -9,16 +9,16 @@ public class GameRoom {
     private final Map<String, Player> players = new ConcurrentHashMap<>();
     private final Map<String, Bullet> bullets = new ConcurrentHashMap<>();
 
+    // 게임 전역 설정 (플레이어 속도, 총알 속도/생명, 히트박스, 점프관련 중력)
     private final double MOVE_SPEED = 0.12;
     private final double BULLET_SPEED = 0.6;
     private final double HIT_RADIUS = 0.6;
     private final long BULLET_LIFETIME = 1500;
-
     private final double GRAVITY = -0.012;
     private final double JUMP_FORCE = 0.28;
 
     public void addPlayer(String id) {
-        if (players.size() < 2) {
+        if (players.size() < 5) {
             double initialX = players.isEmpty() ? -5.0 : 5.0;
             players.put(id, new Player(id, initialX, 0.0, 0.0));
         }
@@ -37,15 +37,16 @@ public class GameRoom {
 
     public void createBullet(String shooterId, double dirX, double dirY, double dirZ) {
         Player shooter = players.get(shooterId);
+        // 플레이어가 죽지 않은 경우에만 발사 가능
         if (shooter == null || shooter.getHp() <= 0) return;
-
         String bulletId = shooterId + "_" + System.nanoTime();
+        // 생성 위치를 플레이어의 시점보다 살짝 높은곳에서 발사. 방향은 파라미터화
         Bullet bullet = new Bullet(bulletId, shooterId, shooter.getX(), shooter.getY() + 1.0, shooter.getZ(), dirX, dirY, dirZ);
         bullets.put(bulletId, bullet);
     }
 
     public void updatePhysics() {
-        // 1. 플레이어 FPS 이동 및 중력 연산
+
         for (Player p : players.values()) {
             if (p.getHp() <= 0) continue;
 
@@ -58,7 +59,6 @@ public class GameRoom {
                 p.setVelocityY(0);
             }
 
-            // ⭐️ [축 보정] Three.js 표준 시야에 맞춘 시선 정면 벡터 연산
             // 회전각(Yaw)에 따른 앞방향 및 우측방향 벡터 수정
             double forwardX = -Math.sin(p.getYaw());
             double forwardZ = -Math.cos(p.getYaw());

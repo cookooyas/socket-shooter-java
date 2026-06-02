@@ -7,9 +7,10 @@ import lombok.Setter;
 @Setter
 public class Bullet {
     private final String id;
+    // 발사 주체 확인
     private final String ownerId;
     private double x, y, z;
-    private final double dirX, dirY, dirZ; // ⭐️ Y축 발사 방향 추가
+    private final double dirX, dirY, dirZ;
     private final long createdAt;
 
     public Bullet(String id, String ownerId, double x, double y, double z, double dirX, double dirY, double dirZ) {

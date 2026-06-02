@@ -8,18 +8,20 @@ import lombok.Setter;
 public class Player {
     private final String id;
     private double x;
-    private double y; // ⭐️ 이제 Y축(높이)이 실시간으로 변합니다.
+    private double y;
     private double z;
     private int hp;
 
-    // 키보드 입력 상태 (FPS 조작을 위해 방향 벡터가 아닌 raw 입력 상태를 받음)
+    // 위변조 방지를 위해 boolean으로 입력 여부만을 받음
     private boolean moveForward;
     private boolean moveBackward;
     private boolean moveLeft;
     private boolean moveRight;
 
-    private double yaw; // ⭐️ 플레이어가 바라보는 수평 회전 각도 (라디안)
-    private double velocityY; // ⭐️ Y축 이동 속도 (중력 및 점프 가속도용)
+    // 좌우 시야 라디안 값
+    private double yaw;
+    // Y축 속도 (점프에 활용)
+    private double velocityY;
 
     public Player(String id, double x, double y, double z) {
         this.id = id;
