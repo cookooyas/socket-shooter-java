@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>3D Local FPS Game with 3D Model</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111; font-family: monospace; }
+        #ui { position: absolute; top: 15px; left: 15px; color: #00ff00; z-index: 10; pointer-events: none; }
+
+        /* FPS 게임 조준점(크로스헤어) 스타일 세팅 */
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 10px;
+            height: 10px;
+            transform: translate(-50%, -50%);
+            color: #00ff00;
+            font-size: 20px;
+            font-weight: bold;
+            z-index: 20;
+            pointer-events: none;
+            user-select: none;
+        }
+        #instructions {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #fff;
+            background: rgba(0,0,0,0.6);
+            padding: 10px 20px;
+            border-radius: 5px;
+            font-size: 14px;
+            pointer-events: none;
+        }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.module.js",
+                "three/addons/loaders/GLTFLoader.js": "https://cdn.jsdelivr.net/gh/mrdoob/three.js@r128/examples/jsm/loaders/GLTFLoader.js"
+            }
+        }
+    </script>
+</head>
+<body>
+<div id="ui">
+    <h2>[3D Socket FPS - Multi-Play]</h2>
+    <div id="my-id">내 ID: Connecting...</div>
+    <div id="players-info"></div>
+</div>
+
+<div id="crosshair">+</div>
+<div id="instructions">화면을 클릭하면 마우스 락(FPS 조작)이 시작됩니다. (나가기: ESC)</div>
+
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>
