@@ -33,6 +33,12 @@ let yaw = 0;
 let pitch = 0;
 const cameraDirection = new THREE.Vector3();
 
+// 앉기(Crouch) 제어용 글로벌 Hold 상태 변수 (Shift 기준)
+let isShiftPressed = false;
+
+// 가상 히트박스 기준 반경 상수
+const BASE_HIT_RADIUS = 0.5;
+
 // ==========================================
 // 2. 3D 마스터 모델 로드 (모션 내장 스킨)
 // ==========================================
@@ -84,27 +90,35 @@ socket.onmessage = (event) => {
             const type = data[0];
 
             if (type === 'P') {
-                const [ , id, xStr, yStr, zStr, hpStr, yawStr] = data;
+                // 포맷: P,id,x,y,z,hp,yaw,isCrouching
+                const [ , id, xStr, yStr, zStr, hpStr, yawStr, crouchStr] = data;
                 const posX = parseFloat(xStr);
                 const posY = parseFloat(yStr);
                 const posZ = parseFloat(zStr);
                 const playerYaw = parseFloat(yawStr);
+
+                const isCrouching = (crouchStr && crouchStr.trim() === "1") && (posY <= 0.05);
                 activePlayerIds.add(id);
 
-                infoText += `플레이어 [${id.substring(0,5)}]: HP ${hpStr}<br/>`;
+                infoText += `플레이어 [${id.substring(0,5)}]: HP ${hpStr} ${isCrouching ? '<span style="color:#ffff00;">[앉음]</span>' : ''}<br/>`;
 
                 if (!remotePlayers.has(id)) {
                     const playerGroup = new THREE.Group();
 
+                    // 껍데기 더미 메쉬 (비활성화 유지)
                     const dummyGeo = new THREE.BoxGeometry(1.0, 1.8, 1.0);
-                    const dummyMat = new THREE.MeshStandardMaterial({
-                        color: id === myClientId ? 0x00ff00 : 0xff0000,
-                        wireframe: true
-                    });
+                    const dummyMat = new THREE.MeshStandardMaterial({ visible: false });
                     const dummyMesh = new THREE.Mesh(dummyGeo, dummyMat);
                     dummyMesh.position.y = 0.9;
                     dummyMesh.name = "skin";
                     playerGroup.add(dummyMesh);
+
+                    // ⭐️ [요청 반영] 히트박스 라인 비활성화 (visible: false)
+                    const hitboxGeo = new THREE.CylinderGeometry(BASE_HIT_RADIUS, BASE_HIT_RADIUS, 1.4, 8, 1, true);
+                    const hitboxMat = new THREE.MeshBasicMaterial({ color: 0xff0000, wireframe: true, visible: false });
+                    const hitboxMesh = new THREE.Mesh(hitboxGeo, hitboxMat);
+                    hitboxMesh.name = "hitbox_wire";
+                    playerGroup.add(hitboxMesh);
 
                     scene.add(playerGroup);
                     remotePlayers.set(id, playerGroup);
@@ -123,6 +137,18 @@ socket.onmessage = (event) => {
 
                 targetGroup.position.set(posX, posY, posZ);
                 targetGroup.rotation.y = playerYaw;
+
+                // 내부 가상 히트박스 데이터 위치 동기화 (화면엔 안 보임)
+                const hitboxWire = targetGroup.getObjectByName("hitbox_wire");
+                if (hitboxWire) {
+                    if (isCrouching) {
+                        hitboxWire.scale.set(1.1, 0.55, 1.1);
+                        hitboxWire.position.set(0, 0.40, 0);
+                    } else {
+                        hitboxWire.scale.set(1.0, 1.0, 1.0);
+                        hitboxWire.position.set(0, 0.85, 0);
+                    }
+                }
 
                 if (masterAstronautModel && targetGroup.getObjectByName("skin") && targetGroup.getObjectByName("skin").isMesh) {
                     const oldSkin = targetGroup.getObjectByName("skin");
@@ -150,17 +176,15 @@ socket.onmessage = (event) => {
                         });
 
                         playerActions.set(id, actions);
-
                         if (actions["Idle"]) actions["Idle"].play();
                     }
-                    console.log(`[애니메이션 엔진] 유저 [${id.substring(0,5)}] 전용 14종 상태머신 빌드 완료.`);
                 }
 
+                // 실시간 모션 믹서 제어 및 루프 제한 락킹
                 const actions = playerActions.get(id);
                 if (actions) {
                     let targetState = "Idle";
 
-                    // 1. 사망 상태 체크 (최우선 순위)
                     if (parseInt(hpStr) <= 0) {
                         targetState = "Death";
                         if (actions["Death"]) {
@@ -168,24 +192,25 @@ socket.onmessage = (event) => {
                             actions["Death"].clampWhenFinished = true;
                         }
                     }
-                        // 2. 공중 상태 체크 (점프 및 낙하 중)
-                    // 서버에서 보낸 posY가 0.05보다 크다면 공중에 떠 있는 것으로 판정합니다.
                     else if (posY > 0.05) {
-                        // 움직이면서 점프 중이면 'WalkJump', 제자리 점프 중이면 'Jump'를 선택합니다.
                         if (distanceMoved > 0.02) {
                             targetState = actions["WalkJump"] ? "WalkJump" : "Jump";
                         } else {
                             targetState = actions["Jump"] ? "Jump" : "Idle";
                         }
 
-                        // 점프 애니메이션의 특성상 공중에 머무는 동안 자연스럽게 마지막 포즈를 유지하거나
-                        // 쳇바퀴 돌듯 무한반복되지 않도록 한 번만 재생되게 세팅할 수 있습니다.
                         if (actions[targetState]) {
                             actions[targetState].setLoop(THREE.LoopOnce);
                             actions[targetState].clampWhenFinished = true;
                         }
                     }
-                    // 3. 지상에 있는 상태 (Idle / Walking / Running)
+                    else if (isCrouching) {
+                        targetState = "Sitting";
+                        if (actions["Sitting"]) {
+                            actions["Sitting"].setLoop(THREE.LoopOnce);
+                            actions["Sitting"].clampWhenFinished = true;
+                        }
+                    }
                     else {
                         if (distanceMoved > 0.02) {
                             targetState = actions["Walking"] ? "Walking" : "Running";
@@ -193,13 +218,12 @@ socket.onmessage = (event) => {
                             targetState = "Idle";
                         }
 
-                        // 지상으로 내려왔을 때는 점프 애니메이션들의 락(Clamp)을 해제하고 초기화해 줍니다.
                         if (actions["Jump"]) actions["Jump"].paused = false;
                         if (actions["WalkJump"]) actions["WalkJump"].paused = false;
                         if (actions["Death"]) actions["Death"].paused = false;
+                        if (actions["Sitting"]) actions["Sitting"].paused = false;
                     }
 
-                    // 상태가 실제로 변했을 때만 부드럽게 애니메이션 교체(CrossFade)
                     if (targetGroup.userData.currentGroupState !== targetState) {
                         const currentAction = actions[targetGroup.userData.currentGroupState];
                         const nextAction = actions[targetState];
@@ -207,17 +231,16 @@ socket.onmessage = (event) => {
                         if (currentAction && nextAction) {
                             nextAction.reset();
                             nextAction.play();
-                            // 0.1초 동안 부드럽게 모션을 섞어주며 전환
-                            currentAction.crossFadeTo(nextAction, 0.1, true);
+                            currentAction.crossFadeTo(nextAction, 0.12, true);
                         }
                         targetGroup.userData.currentGroupState = targetState;
                     }
                 }
 
-                // ⭐️ [시점 낮추기 핵심 보정]
-                // 기존 posY + 1.5 (머리 위 허공) -> posY + 0.9 (모델 눈높이에 딱 맞춤)
+                // 1인칭 카메라 눈높이 시야 보정 (백엔드 실제 판정 높이 반영)
                 if (id === myClientId) {
-                    camera.position.set(posX, posY + 0.9, posZ);
+                    const currentEyeHeight = isCrouching ? 0.45 : 0.85;
+                    camera.position.set(posX, posY + currentEyeHeight, posZ);
                 }
 
                 const currentSkin = targetGroup.getObjectByName("skin");
@@ -292,7 +315,7 @@ document.addEventListener('mousemove', (event) => {
 });
 
 // ==========================================
-// 5. 키보드 입력 및 송신계 (WASD)
+// 5. 키보드 입력 및 송신계 (WASD + Shift)
 // ==========================================
 const inputState = { w: 0, a: 0, s: 0, d: 0 };
 
@@ -310,6 +333,20 @@ window.addEventListener('keydown', (e) => {
     if (e.key === ' ' || e.code === 'Space') {
         if (socket.readyState === WebSocket.OPEN) socket.send("JUMP");
     }
+
+    if (e.key === 'Shift') {
+        e.preventDefault();
+
+        const myGroup = remotePlayers.get(myClientId);
+        const isAirborne = myGroup && myGroup.position.y > 0.05;
+
+        if (!isShiftPressed && !isAirborne) {
+            isShiftPressed = true;
+            if (socket.readyState === WebSocket.OPEN) {
+                socket.send("CROUCH,1");
+            }
+        }
+    }
 });
 
 window.addEventListener('keyup', (e) => {
@@ -317,6 +354,15 @@ window.addEventListener('keyup', (e) => {
     if (['w','a','s','d'].includes(key)) {
         inputState[key] = 0;
         sendInput();
+    }
+
+    if (e.key === 'Shift') {
+        if (isShiftPressed) {
+            isShiftPressed = false;
+            if (socket.readyState === WebSocket.OPEN) {
+                socket.send("CROUCH,0");
+            }
+        }
     }
 });
 

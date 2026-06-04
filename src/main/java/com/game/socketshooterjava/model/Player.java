@@ -17,6 +17,7 @@ public class Player {
     private boolean moveBackward;
     private boolean moveLeft;
     private boolean moveRight;
+    private boolean isCrouching = false;
 
     // 좌우 시야 라디안 값
     private double yaw;

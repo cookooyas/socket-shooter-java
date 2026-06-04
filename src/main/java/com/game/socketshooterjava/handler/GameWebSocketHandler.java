@@ -61,6 +61,10 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 player.setYaw(Double.parseDouble(tokens[1]));
                 break;
 
+            case "CROUCH":
+                player.setCrouching("1".equals(tokens[1]));
+                break;
+
             case "JUMP": // JUMP
                 gameRoom.handleJump(player.getId());
                 break;

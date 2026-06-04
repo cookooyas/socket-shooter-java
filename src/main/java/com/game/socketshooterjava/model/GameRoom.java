@@ -30,130 +30,172 @@ public class GameRoom {
 
     public void handleJump(String playerId) {
         Player p = players.get(playerId);
-        if (p != null && p.getHp() > 0 && p.getY() <= 0.001) {
+        if (p != null && p.getHp() > 0 && p.getY() <= 0.001 && !p.isCrouching()) {
             p.setVelocityY(JUMP_FORCE);
         }
     }
 
     public void createBullet(String shooterId, double dirX, double dirY, double dirZ) {
         Player shooter = players.get(shooterId);
-        // 플레이어가 죽지 않은 경우에만 발사 가능
         if (shooter == null || shooter.getHp() <= 0) return;
+
+        // 기본 탄퍼짐 오차 수치 (서 있거나 달릴 때)
+        double spread = 0.08;
+
+        // ⭐️ [사격 정밀도 상승] 앉아있을 때는 탄퍼짐 오차를 0.015로 확 줄여서 정확하게 조준되도록 만듭니다!
+        if (shooter.isCrouching()) {
+            spread = 0.015;
+        }
+
+        // 시선 벡터에 약간의 무작위 오차 부여 (난수 가산)
+        double finalDirX = dirX + (Math.random() - 0.5) * spread;
+        double finalDirY = dirY + (Math.random() - 0.5) * spread;
+        double finalDirZ = dirZ + (Math.random() - 0.5) * spread;
+
+        // 벡터 정규화 (오차가 섞여 크기가 변한 벡터를 다시 크기 1인 방향벡터로 만듦)
+        double len = Math.sqrt(finalDirX*finalDirX + finalDirY*finalDirY + finalDirZ*finalDirZ);
+        if (len > 0) {
+            finalDirX /= len; finalDirY /= len; finalDirZ /= len;
+        }
+
         String bulletId = shooterId + "_" + System.nanoTime();
-        // 생성 위치를 플레이어의 시점보다 살짝 높은곳에서 발사. 방향은 파라미터화
-        Bullet bullet = new Bullet(bulletId, shooterId, shooter.getX(), shooter.getY() + 1.0, shooter.getZ(), dirX, dirY, dirZ);
+
+        // ⭐️ 앉았을 때는 총구의 높이(Y축)도 낮아져야 자연스럽습니다. (지상 1.0 -> 0.5)
+        double bulletSpawnY = shooter.getY() + (shooter.isCrouching() ? 0.5 : 1.0);
+
+        Bullet bullet = new Bullet(bulletId, shooterId, shooter.getX(), bulletSpawnY, shooter.getZ(), finalDirX, finalDirY, finalDirZ);
         bullets.put(bulletId, bullet);
     }
-
     public void updatePhysics() {
-
         for (Player p : players.values()) {
             if (p.getHp() <= 0) continue;
 
-            // 중력 및 Y축 처리
+            // 1. 중력 및 Y축 고도 연산
             p.setVelocityY(p.getVelocityY() + GRAVITY);
             p.setY(p.getY() + p.getVelocityY());
 
+            // 바닥 착지 처리
             if (p.getY() <= 0) {
                 p.setY(0);
                 p.setVelocityY(0);
             }
 
-            // 회전각(Yaw)에 따른 앞방향 및 우측방향 벡터 수정
-            double forwardX = -Math.sin(p.getYaw());
-            double forwardZ = -Math.cos(p.getYaw());
-
-            // 앞방향 벡터를 오른쪽으로 90도 회전한 벡터 (Right Vector)
-            double rightX = -Math.cos(p.getYaw());
-            double rightZ = Math.sin(p.getYaw());
-
-            double moveX = 0;
-            double moveZ = 0;
-
-            // 키보드 입력 매핑 정렬
-            if (p.isMoveForward())  { moveX -= forwardX; moveZ -= forwardZ; }
-            if (p.isMoveBackward()) { moveX += forwardX; moveZ += forwardZ; }
-            if (p.isMoveLeft())     { moveX -= rightX;   moveZ -= rightZ; } // 우측 벡터 차감 = 좌측 이동
-            if (p.isMoveRight())    { moveX += rightX;   moveZ += rightZ; } // 우측 벡터 가산 = 우측 이동
-
-            double len = Math.sqrt(moveX * moveX + moveZ * moveZ);
-            if (len > 0) {
-                p.setX(p.getX() + (moveX / len) * MOVE_SPEED);
-                p.setZ(p.getZ() + (moveZ / len) * MOVE_SPEED);
+            // ⭐️ [공중 앉기 방어 가드] Y축이 바닥이 아니고 공중에 떠 있다면 앉음 상태를 강제로 해제합니다.
+            if (p.getY() > 0.05) {
+                p.setCrouching(false);
             }
 
-            // 전장 외곽 경계 제한
-            if (p.getX() > 24.0) p.setX(24.0);
-            if (p.getX() < -24.0) p.setX(-24.0);
-            if (p.getZ() > 24.0) p.setZ(24.0);
-            if (p.getZ() < -24.0) p.setZ(-24.0);
+            // 2. 시선(Yaw) 각도 기반 전후좌우 방향 벡터 계산
+            double forwardX = -Math.sin(p.getYaw()); double forwardZ = -Math.cos(p.getYaw());
+            double rightX = -Math.cos(p.getYaw()); double rightZ = Math.sin(p.getYaw());
+
+            double moveX = 0; double moveZ = 0;
+            if (p.isMoveForward())  { moveX -= forwardX; moveZ -= forwardZ; }
+            if (p.isMoveBackward()) { moveX += forwardX; moveZ += forwardZ; }
+            if (p.isMoveLeft())     { moveX -= rightX;   moveZ -= rightZ; }
+            if (p.isMoveRight())    { moveX += rightX;   moveZ += rightZ; }
+
+            // 3. 이동 속도 반영 및 앉기 제약 적용
+            double len = Math.sqrt(moveX * moveX + moveZ * moveZ);
+            if (len > 0) {
+                // 앉아있을 때는 기존 속도(MOVE_SPEED)의 40% 수준으로 느리게 기어가도록 제약
+                double currentSpeed = p.isCrouching() ? (MOVE_SPEED * 0.4) : MOVE_SPEED;
+                p.setX(p.getX() + (moveX / len) * currentSpeed);
+                p.setZ(p.getZ() + (moveZ / len) * currentSpeed);
+            }
+
+            // 맵 월드 경계선 제한 (가드)
+            if (p.getX() > 24.0) p.setX(24.0); if (p.getX() < -24.0) p.setX(-24.0);
+            if (p.getZ() > 24.0) p.setZ(24.0); if (p.getZ() < -24.0) p.setZ(-24.0);
         }
 
-        // 2. 총알 이동 및 충돌 연산 (기존 유지)
+        // ========================================================
+        // 4. 총알 이동 및 동적 히트박스(Hitbox) 충돌 판정 루프
+        // ========================================================
         long now = System.currentTimeMillis();
         for (Bullet b : bullets.values()) {
+            // 총알 수명 만료 처리
             if (now - b.getCreatedAt() > BULLET_LIFETIME) {
                 bullets.remove(b.getId());
                 continue;
             }
 
+            // 총알 물리 좌표 이동
             b.setX(b.getX() + b.getDirX() * BULLET_SPEED);
             b.setY(b.getY() + b.getDirY() * BULLET_SPEED);
             b.setZ(b.getZ() + b.getDirZ() * BULLET_SPEED);
 
+            // 월드 경계 이탈 총알 삭제
             if (Math.abs(b.getX()) > 30 || Math.abs(b.getZ()) > 30 || b.getY() < -5 || b.getY() > 40) {
                 bullets.remove(b.getId());
                 continue;
             }
 
+            // 플레이어들과의 피격 충돌 연산
             for (Player p : players.values()) {
+                // 자기가 쏜 총알이 아니고, 상대방이 살아있는 상태일 때만 체크
                 if (!p.getId().equals(b.getOwnerId()) && p.getHp() > 0) {
                     double dx = p.getX() - b.getX();
-                    // ⭐️ 우주비행사 모델의 중심 높이에 맞춰 피격 Y축 중심점을 +0.7로 보정
-                    double dy = (p.getY() + 0.7) - b.getY();
                     double dz = p.getZ() - b.getZ();
+
+                    // ⭐️ [히트박스 가변 공식] 기본값 세팅
+                    double currentHitRadius = HIT_RADIUS; // 기본 반경 (0.6)
+                    double targetCenterY = p.getY() + 0.85; // 서 있을 때 피격 중심 고도
+
+                    // 앉아있는 상태라면 프론트엔드 와이어프레임 디버거와 정확히 동치로 스케일링 변형
+                    if (p.isCrouching()) {
+                        currentHitRadius = HIT_RADIUS; // 앉으면 웅크려서 좌우 반경 1.3배 증가 (0.78)
+                        targetCenterY = p.getY() + 0.7;    // 앉았으므로 피격 중심 고도를 아래쪽으로 하강
+                    }
+
+                    double dy = targetCenterY - b.getY();
                     double distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-                    if (distance < HIT_RADIUS) {
+                    // 최종 충돌 검증 성공 시 데미지 처리
+                    if (distance < currentHitRadius) {
                         p.setHp(Math.max(0, p.getHp() - 10));
                         bullets.remove(b.getId());
+
+                        // ⭐️ [플레이어 사망 및 부활 스레드 비동기 외주]
                         if (p.getHp() <= 0) {
                             final String deadPlayerId = p.getId();
-                            System.out.println("[서버] 플레이어 사망: " + deadPlayerId);
+                            System.out.println("[서버 물리 엔진] 플레이어 사망 트리거 가동: " + deadPlayerId);
 
                             new Thread(() -> {
                                 try {
-                                    Thread.sleep(3000);
+                                    Thread.sleep(3000); // 3초간 사망 레이어 유지 대기
                                     Player target = players.get(deadPlayerId);
                                     if (target != null) {
-                                        // 체력 풀피로 회복 및 랜덤 위치 리스폰
                                         target.setHp(100);
                                         target.setX((Math.random() - 0.5) * 20.0);
                                         target.setZ((Math.random() - 0.5) * 20.0);
                                         target.setY(0);
-                                        System.out.println("[서버] 플레이어 부활 완료: " + deadPlayerId);
+                                        target.setCrouching(false); // 부활 시 앉기 초기화
+                                        System.out.println("[서버 물리 엔진] 플레이어 부활 리스폰 완료: " + deadPlayerId);
                                     }
                                 } catch (InterruptedException ignored) {}
                             }).start();
                         }
-                        break;
+                        break; // 총알이 소멸했으므로 다른 플레이어 검사 중단
                     }
                 }
             }
         }
     }
-
+    // 4. generateSnapshot() 수정 (프론트엔드에 앉음 상태 정보를 전달해야 하므로 패킷 끝에 추가)
     public String generateSnapshot() {
         StringBuilder sb = new StringBuilder("TICK");
         for (Player p : players.values()) {
-            // ⭐️ 마지막 항목에 플레이어의 시선 각도 p.getYaw() 추가 전송!
-            // 포맷: P,id,x,y,z,hp,yaw
+            // 포맷 끝에 앉음 여부(1 또는 0)를 플래그로 실어 보냅니다.
+            // 결과 구조: P,id,x,y,z,hp,yaw,isCrouching(1/0)
+            int crouchFlag = p.isCrouching() ? 1 : 0;
             sb.append("|P,").append(p.getId())
                     .append(",").append(String.format("%.2f", p.getX()))
                     .append(",").append(String.format("%.2f", p.getY()))
                     .append(",").append(String.format("%.2f", p.getZ()))
                     .append(",").append(p.getHp())
-                    .append(",").append(String.format("%.4f", p.getYaw()));
+                    .append(",").append(String.format("%.4f", p.getYaw()))
+                    .append(",").append(crouchFlag); // ◄ 추가
         }
         for (Bullet b : bullets.values()) {
             sb.append("|B,").append(b.getId())
