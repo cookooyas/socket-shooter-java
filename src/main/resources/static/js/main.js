@@ -1,23 +1,41 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js'; // 🌟 DRACOLoader 추가 임포트
 
 // ==========================================
 // 1. 전장 월드 공간 세팅 (바닥 및 입체 조명)
 // ==========================================
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x141414);
+
+// 🌟 입체감을 주기 위한 렌더러 그림자 활성화
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
 scene.add(new THREE.GridHelper(60, 60, 0x00ff00, 0x333333));
 
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.4); // 지형 대비 조명 밸런스 조정
 scene.add(ambientLight);
-const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
-dirLight.position.set(10, 20, 10);
+
+// 🌟 그림자를 생성하는 직사 조명 스펙 확장
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+dirLight.position.set(30, 40, 20);
+dirLight.castShadow = true;
+dirLight.shadow.mapSize.width = 2048;
+dirLight.shadow.mapSize.height = 2048;
+dirLight.shadow.camera.near = 0.5;
+dirLight.shadow.camera.far = 150;
+const d = 40;
+dirLight.shadow.camera.left = -d;
+dirLight.shadow.camera.right = d;
+dirLight.shadow.camera.top = d;
+dirLight.shadow.camera.bottom = -d;
 scene.add(dirLight);
 
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(window.innerWidth, window.innerHeight);
-document.body.appendChild(renderer.domElement);
 
 const remotePlayers = new Map();
 const remoteBullets = new Map();
@@ -64,9 +82,51 @@ function setupRadialHoverEvents() {
 setupRadialHoverEvents();
 
 // ==========================================
-// 2. 3D 마스터 모델 로드 (모션 내장 스킨)
+// 2. 3D 마스터 모델 및 오픈소스 지형 맵 로드
 // ==========================================
 const gltfLoader = new GLTFLoader();
+
+// 🌟 드라코 압축 해제기 연결
+const dracoLoader = new DRACOLoader();
+dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.5/');
+gltfLoader.setDRACOLoader(dracoLoader);
+
+// 오픈소스 맵 파일 경로 세팅
+const MAP_URL = 'https://threejs.org/examples/models/gltf/LittlestTokyo.glb';
+let mapModel = null;
+
+gltfLoader.load(MAP_URL, (gltf) => {
+    mapModel = gltf.scene;
+    mapModel.scale.set(0.03, 0.03, 0.03); // 먼저 배율을 적용합니다.
+
+    // 🌟 [핵심] 모델의 실제 3D 크기를 계산하는 바운딩 박스 생성
+    const box = new THREE.Box3().setFromObject(mapModel);
+
+    // 이 박스에서 최소 Y값(가장 밑바닥)과 최대 Y값(가장 꼭대기)을 뽑아냅니다.
+    const minY = box.min.y;
+    const maxY = box.max.y;
+
+    // 모델의 실제 높이를 구합니다.
+    const modelHeight = maxY - minY;
+
+    // 🌟 모델의 가장 밑바닥(minY)이 정확히 월드의 Y=0 좌표에 오도록 Y축 위치를 조정합니다.
+    // 기존 위치값에서 제일 밑바닥의 높이만큼 빼주면 정확히 수평선 위로 딱 올라옵니다.
+    mapModel.position.y = mapModel.position.y - (minY * 0.9);
+
+    // 지형 메쉬 전체에 입체 그림자 효과 강제 주입 (이하 동일)
+    mapModel.traverse((child) => {
+        if (child.isMesh) {
+            child.castShadow = true;
+            child.receiveShadow = true;
+            if (child.material) child.material.roughness = 0.7;
+        }
+    });
+
+    scene.add(mapModel);
+    console.log("오픈소스 맵 로드 및 바운딩 박스 자동 바닥 정렬 완료!");
+}, undefined, (error) => console.error("맵 로드 실패:", error));
+
+// 마스터 로봇 스킨 모델 로드
 const modelUrl = 'https://threejs.org/examples/models/gltf/RobotExpressive/RobotExpressive.glb';
 let masterAstronautModel = null;
 
@@ -104,7 +164,10 @@ function playEmoteForPlayer(playerId, emoteIdx) {
 // ==========================================
 // 3. 웹소켓 데이터 수신 및 '실시간 상태 머신' 연산
 // ==========================================
-const socket = new WebSocket(`ws://${window.location.host}/ws/game`);
+// 🌟 HTTPS 도메인 혼합 콘텐츠 대응을 위한 프로토콜 가드 필터
+const isSecure = window.location.protocol === 'https:';
+const wsProtocol = isSecure ? 'wss://' : 'ws://';
+const socket = new WebSocket(`${wsProtocol}${window.location.host}/ws/game`);
 
 socket.onmessage = (event) => {
     const payload = event.data;
@@ -196,7 +259,15 @@ socket.onmessage = (event) => {
                 if (masterAstronautModel && targetGroup.getObjectByName("skin") && targetGroup.getObjectByName("skin").isMesh) {
                     targetGroup.remove(targetGroup.getObjectByName("skin"));
                     const newSkin = masterAstronautModel.clone(); newSkin.name = "skin";
-                    if (id === myClientId) newSkin.traverse(c => { if (c.isMesh) c.layers.set(1); });
+
+                    // 🌟 캐릭터 메쉬 복제 시 맵 지형 위에 발그림자가 떨어지도록 옵션 설정
+                    newSkin.traverse(c => {
+                        if (c.isMesh) {
+                            c.castShadow = true;
+                            c.receiveShadow = true;
+                            if (id === myClientId) c.layers.set(1);
+                        }
+                    });
                     targetGroup.add(newSkin);
 
                     if (masterAstronautModel.animations && masterAstronautModel.animations.length > 0) {
