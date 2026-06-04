@@ -18,7 +18,7 @@ public class GameRoom {
     private final double JUMP_FORCE = 0.28;
 
     public void addPlayer(String id) {
-        if (players.size() < 5) {
+        if (players.size() < 8) {
             double initialX = players.isEmpty() ? -5.0 : 5.0;
             players.put(id, new Player(id, initialX, 0.0, 0.0));
         }
@@ -117,6 +117,25 @@ public class GameRoom {
                     if (distance < HIT_RADIUS) {
                         p.setHp(Math.max(0, p.getHp() - 10));
                         bullets.remove(b.getId());
+                        if (p.getHp() <= 0) {
+                            final String deadPlayerId = p.getId();
+                            System.out.println("[서버] 플레이어 사망: " + deadPlayerId);
+
+                            new Thread(() -> {
+                                try {
+                                    Thread.sleep(3000);
+                                    Player target = players.get(deadPlayerId);
+                                    if (target != null) {
+                                        // 체력 풀피로 회복 및 랜덤 위치 리스폰
+                                        target.setHp(100);
+                                        target.setX((Math.random() - 0.5) * 20.0);
+                                        target.setZ((Math.random() - 0.5) * 20.0);
+                                        target.setY(0);
+                                        System.out.println("[서버] 플레이어 부활 완료: " + deadPlayerId);
+                                    }
+                                } catch (InterruptedException ignored) {}
+                            }).start();
+                        }
                         break;
                     }
                 }

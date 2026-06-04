@@ -28,7 +28,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
-        if (sessions.size() >= 2) {
+        if (sessions.size() >= 8) {
             session.close(new CloseStatus(4001, "Room is full"));
             return;
         }

@@ -159,10 +159,47 @@ socket.onmessage = (event) => {
                 const actions = playerActions.get(id);
                 if (actions) {
                     let targetState = "Idle";
-                    if (distanceMoved > 0.02) {
-                        targetState = actions["Walking"] ? "Walking" : "Running";
+
+                    // 1. 사망 상태 체크 (최우선 순위)
+                    if (parseInt(hpStr) <= 0) {
+                        targetState = "Death";
+                        if (actions["Death"]) {
+                            actions["Death"].setLoop(THREE.LoopOnce);
+                            actions["Death"].clampWhenFinished = true;
+                        }
+                    }
+                        // 2. 공중 상태 체크 (점프 및 낙하 중)
+                    // 서버에서 보낸 posY가 0.05보다 크다면 공중에 떠 있는 것으로 판정합니다.
+                    else if (posY > 0.05) {
+                        // 움직이면서 점프 중이면 'WalkJump', 제자리 점프 중이면 'Jump'를 선택합니다.
+                        if (distanceMoved > 0.02) {
+                            targetState = actions["WalkJump"] ? "WalkJump" : "Jump";
+                        } else {
+                            targetState = actions["Jump"] ? "Jump" : "Idle";
+                        }
+
+                        // 점프 애니메이션의 특성상 공중에 머무는 동안 자연스럽게 마지막 포즈를 유지하거나
+                        // 쳇바퀴 돌듯 무한반복되지 않도록 한 번만 재생되게 세팅할 수 있습니다.
+                        if (actions[targetState]) {
+                            actions[targetState].setLoop(THREE.LoopOnce);
+                            actions[targetState].clampWhenFinished = true;
+                        }
+                    }
+                    // 3. 지상에 있는 상태 (Idle / Walking / Running)
+                    else {
+                        if (distanceMoved > 0.02) {
+                            targetState = actions["Walking"] ? "Walking" : "Running";
+                        } else {
+                            targetState = "Idle";
+                        }
+
+                        // 지상으로 내려왔을 때는 점프 애니메이션들의 락(Clamp)을 해제하고 초기화해 줍니다.
+                        if (actions["Jump"]) actions["Jump"].paused = false;
+                        if (actions["WalkJump"]) actions["WalkJump"].paused = false;
+                        if (actions["Death"]) actions["Death"].paused = false;
                     }
 
+                    // 상태가 실제로 변했을 때만 부드럽게 애니메이션 교체(CrossFade)
                     if (targetGroup.userData.currentGroupState !== targetState) {
                         const currentAction = actions[targetGroup.userData.currentGroupState];
                         const nextAction = actions[targetState];
@@ -170,7 +207,8 @@ socket.onmessage = (event) => {
                         if (currentAction && nextAction) {
                             nextAction.reset();
                             nextAction.play();
-                            currentAction.crossFadeTo(nextAction, 0.15, true);
+                            // 0.1초 동안 부드럽게 모션을 섞어주며 전환
+                            currentAction.crossFadeTo(nextAction, 0.1, true);
                         }
                         targetGroup.userData.currentGroupState = targetState;
                     }
