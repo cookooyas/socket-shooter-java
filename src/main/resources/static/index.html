@@ -7,13 +7,10 @@
         body { margin: 0; overflow: hidden; background-color: #111; font-family: monospace; }
         #ui { position: absolute; top: 15px; left: 15px; color: #00ff00; z-index: 10; pointer-events: none; }
 
-        /* FPS 게임 조준점(크로스헤어) 스타일 세팅 */
         #crosshair {
             position: absolute;
-            top: 50%;
-            left: 50%;
-            width: 10px;
-            height: 10px;
+            top: 50%; left: 50%;
+            width: 10px; height: 10px;
             transform: translate(-50%, -50%);
             color: #00ff00;
             font-size: 20px;
@@ -24,8 +21,7 @@
         }
         #instructions {
             position: absolute;
-            bottom: 20px;
-            left: 50%;
+            bottom: 20px; left: 50%;
             transform: translateX(-50%);
             color: #fff;
             background: rgba(0,0,0,0.6);
@@ -33,6 +29,124 @@
             border-radius: 5px;
             font-size: 14px;
             pointer-events: none;
+        }
+
+        /* ========================================================
+         * 🎯 라디알 메뉴 (Radial Emote Menu) 스타일시트
+         * ======================================================== */
+        .radial-container {
+            display: none;
+            position: absolute;
+            top: 50%; left: 50%;
+            width: 280px; height: 280px;
+            transform: translate(-50%, -50%);
+            border-radius: 50%;
+            background: rgba(10, 15, 20, 0.75);
+            border: 3px solid #c8aa6e;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.8), inset 0 0 15px rgba(200, 170, 110, 0.3);
+            z-index: 9999;
+            pointer-events: auto;
+            overflow: hidden;
+        }
+
+        /* 중앙 취소 영역 */
+        .radial-center {
+            position: absolute;
+            top: 50%; left: 50%;
+            width: 70px; height: 70px;
+            transform: translate(-50%, -50%);
+            border-radius: 50%;
+            background: rgba(30, 10, 10, 0.8);
+            border: 2px solid #ff4d4d;
+            box-sizing: border-box;
+            z-index: 10005;
+            cursor: pointer;
+            pointer-events: auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.15s ease, border-color 0.15s ease;
+        }
+
+        .radial-center span {
+            color: #ff4d4d;
+            font-size: 14px;
+            font-weight: bold;
+            font-family: 'Malgun Gothic', sans-serif;
+            text-shadow: 0 0 5px rgba(0,0,0,1);
+            user-select: none;
+        }
+
+        /* 4개 분할 구역 마스터 배치 */
+        .radial-sector {
+            position: absolute;
+            width: 100%; height: 100%;
+            top: 0; left: 0;
+            box-sizing: border-box;
+            transition: background 0.15s ease, border 0.15s ease;
+            cursor: pointer;
+            pointer-events: auto;
+        }
+
+        .radial-sector span {
+            position: absolute;
+            color: #e1e1e1;
+            font-size: 14px;
+            font-weight: bold;
+            font-family: 'Malgun Gothic', sans-serif;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.9);
+            width: 100%;
+            text-align: center;
+            user-select: none;
+        }
+
+        /* [구역 0 - 위쪽: WHY? (동작: Dance)] */
+        .radial-sector[data-index="0"] {
+            clip-path: polygon(50% 50%, 0% 0%, 100% 0%);
+            border-bottom: 1px solid rgba(200, 170, 110, 0.2);
+        }
+        .radial-sector[data-index="0"] span { top: 25px; left: 0; color: #ff55ff; }
+
+        /* [구역 1 - 오른쪽: NO] */
+        .radial-sector[data-index="1"] {
+            clip-path: polygon(50% 50%, 100% 0%, 100% 100%);
+            border-left: 1px solid rgba(200, 170, 110, 0.2);
+        }
+        .radial-sector[data-index="1"] span { top: 50%; right: 25px; transform: translateY(-50%); color: #ff4d4d; text-align: right; width: auto; }
+
+        /* [구역 2 - 아래쪽: THUMBSUP] */
+        .radial-sector[data-index="2"] {
+            clip-path: polygon(50% 50%, 100% 100%, 0% 100%);
+            border-top: 1px solid rgba(200, 170, 110, 0.2);
+        }
+        .radial-sector[data-index="2"] span { bottom: 25px; left: 0; color: #ffb533; }
+
+        /* [구역 3 - 왼쪽: YES] */
+        .radial-sector[data-index="3"] {
+            clip-path: polygon(50% 50%, 0% 100%, 0% 0%);
+            border-right: 1px solid rgba(200, 170, 110, 0.2);
+        }
+        .radial-sector[data-index="3"] span { top: 50%; left: 25px; transform: translateY(-50%); color: #33ff55; text-align: left; width: auto; }
+
+        /* 🔥 활성화 하이라이트 */
+        .radial-sector.active {
+            background: rgba(0, 210, 255, 0.25);
+            box-shadow: inset 0 0 30px rgba(0, 210, 255, 0.4);
+        }
+        .radial-sector.active span {
+            color: #ffffff !important;
+            font-size: 15px;
+            text-shadow: 0 0 8px rgba(0, 210, 255, 0.8);
+        }
+
+        .radial-center.active {
+            background: rgba(255, 0, 0, 0.4);
+            border-color: #ffffff;
+            box-shadow: 0 0 10px rgba(255, 0, 0, 0.8);
+        }
+        .radial-center.active span {
+            color: #ffffff;
+            text-shadow: 0 0 8px rgba(255, 77, 77, 0.8);
         }
     </style>
     <script type="importmap">
@@ -52,7 +166,17 @@
 </div>
 
 <div id="crosshair">+</div>
-<div id="instructions">화면을 클릭하면 마우스 락(FPS 조작)이 시작됩니다. (나가기: ESC)</div>
+
+<div id="radial-menu" class="radial-container">
+    <div class="radial-center" data-index="-1"><span>✕ 취소</span></div>
+
+    <div class="radial-sector" data-index="0"><span>❓ WHY?</span></div>
+    <div class="radial-sector" data-index="1"><span>❌ No</span></div>
+    <div class="radial-sector" data-index="2"><span>👍 ThumbsUp</span></div>
+    <div class="radial-sector" data-index="3"><span>⭕ Yes</span></div>
+</div>
+
+<div id="instructions">화면을 클릭하면 마우스 락(FPS 조작)이 시작됩니다. [G] 키를 누르면 감정표현 메뉴가 열립니다. (나가기: ESC)</div>
 
 <script type="module" src="./js/main.js"></script>
 </body>

@@ -205,4 +205,29 @@ public class GameRoom {
         }
         return sb.toString();
     }
+
+    public void handleEmote(String senderId, String emoteIdxStr) {
+        Player p = players.get(senderId);
+        // 플레이어가 방에 존재하고, 살아있는 상태일 때만 중계 허용
+        if (p != null && p.getHp() > 0) {
+            try {
+                int emoteIdx = Integer.parseInt(emoteIdxStr.trim());
+
+                // 프론트엔드 main.js의 수신 규격과 100% 일치하는 프로토콜 생성
+                // 포맷: EMOTE_BROADCAST|플레이어ID,애니메이션인덱스
+                String broadcastMessage = String.format("EMOTE_BROADCAST|%s,%d", senderId, emoteIdx);
+
+                // 현재 게임방에 접속 중인 모든 유저들의 웹소켓 세션으로 패킷 전송
+                // 💡 주의: 프로젝트 구조에 따라 세션을 순회하며 메시지를 보내는 코드가 필요합니다.
+                // 보통 WebSocketHandler 등에서 이 메서드를 호출하거나, 아래와 같이 세션 리스트를 공유받아 처리합니다.
+                System.out.println("[서버 중계] 플레이어 " + senderId + " 가 " + emoteIdx + "번 감정표현을 시전함.");
+
+                // 만약 이 클래스(GameRoom) 내부나 연동된 핸들러에 브로드캐스트용 전역 메서드가 있다면
+                // 이 안에서 실행해 주거나, 웹소켓 핸들러 단에서 아래 문자열을 그대로 broadcast 처리해 주면 됩니다.
+
+            } catch (NumberFormatException e) {
+                System.err.println("[서버 에러] 잘못된 감정표현 인덱스 패킷 수신: " + emoteIdxStr);
+            }
+        }
+    }
 }

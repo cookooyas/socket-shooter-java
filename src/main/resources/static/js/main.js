@@ -23,21 +23,45 @@ const remotePlayers = new Map();
 const remoteBullets = new Map();
 let myClientId = null;
 
-// 애니메이션 믹서 및 액션 맵 관리 장부
 let mixers = [];
 const playerActions = new Map();
 const clock = new THREE.Clock();
 
-// FPS 마우스 시선 제어 변수
 let yaw = 0;
 let pitch = 0;
 const cameraDirection = new THREE.Vector3();
 
-// 앉기(Crouch) 제어용 글로벌 Hold 상태 변수 (Shift 기준)
+// 💡 [복구] 앉기(Crouch) 제어용 Hold 상태 변수 및 히트박스 반경
 let isShiftPressed = false;
-
-// 가상 히트박스 기준 반경 상수
 const BASE_HIT_RADIUS = 0.5;
+
+// ==========================================
+// 🎯 [라디알 메뉴 및 호버링 제어 변수]
+// ==========================================
+let isRadialMenuOpen = false;
+let selectedSectorIndex = -1; // -1: 취소, 0:Dance(WHY?), 1:No, 2:ThumbsUp, 3:Yes
+
+const radialMenuUI = document.getElementById('radial-menu');
+
+// 💡 칼정렬 순서 매핑 테이블 (0:위, 1:우, 2:아래, 3:좌)
+const EMOTE_CLIPS = ["Dance", "No", "ThumbsUp", "Yes"];
+
+// 브라우저 호버링(Hover) 이벤트 바인딩
+function setupRadialHoverEvents() {
+    const targets = document.querySelectorAll('.radial-sector, .radial-center');
+
+    targets.forEach(element => {
+        element.addEventListener('mouseenter', () => {
+            if (!isRadialMenuOpen) return;
+
+            selectedSectorIndex = parseInt(element.getAttribute('data-index'));
+
+            targets.forEach(el => el.classList.remove('active'));
+            element.classList.add('active');
+        });
+    });
+}
+setupRadialHoverEvents();
 
 // ==========================================
 // 2. 3D 마스터 모델 로드 (모션 내장 스킨)
@@ -46,23 +70,36 @@ const gltfLoader = new GLTFLoader();
 const modelUrl = 'https://threejs.org/examples/models/gltf/RobotExpressive/RobotExpressive.glb';
 let masterAstronautModel = null;
 
-console.log("[3D 로더] 원격 서버에서 멀티 애니메이션 내장 모델 로드 시작...");
-gltfLoader.load(
-    modelUrl,
-    (gltf) => {
-        masterAstronautModel = gltf.scene;
-        masterAstronautModel.scale.set(0.3, 0.3, 0.3);
-        masterAstronautModel.position.set(0, 0, 0);
+gltfLoader.load(modelUrl, (gltf) => {
+    masterAstronautModel = gltf.scene;
+    masterAstronautModel.scale.set(0.3, 0.3, 0.3);
+    if (gltf.animations && gltf.animations.length > 0) {
+        masterAstronautModel.animations = gltf.animations;
+    }
+}, undefined, (error) => console.error(error));
 
-        if (gltf.animations && gltf.animations.length > 0) {
-            masterAstronautModel.animations = gltf.animations;
-            console.log("[3D 로더] 찾은 모션 리스트:", gltf.animations.map(a => a.name));
-        }
-        console.log("[3D 로더] 원본 마스터 스킨 준비 완료!");
-    },
-    undefined,
-    (error) => console.error("[3D 로더] 모델 로딩 에러:", error)
-);
+function playEmoteForPlayer(playerId, emoteIdx) {
+    if (emoteIdx === -1) return;
+
+    const targetClipName = EMOTE_CLIPS[emoteIdx];
+    const targetGroup = remotePlayers.get(playerId);
+    const actions = playerActions.get(playerId);
+
+    if (targetGroup && actions && actions[targetClipName]) {
+        const currentGroupState = targetGroup.userData.currentGroupState;
+        if (currentGroupState === "Death" || currentGroupState === targetClipName) return;
+
+        if (actions[currentGroupState]) actions[currentGroupState].fadeOut(0.1);
+
+        const emoteAction = actions[targetClipName];
+        emoteAction.reset().setLoop(THREE.LoopOnce);
+        emoteAction.clampWhenFinished = true;
+        emoteAction.fadeIn(0.1).play();
+
+        targetGroup.userData.currentGroupState = targetClipName;
+        targetGroup.userData.isEmoting = true;
+    }
+}
 
 // ==========================================
 // 3. 웹소켓 데이터 수신 및 '실시간 상태 머신' 연산
@@ -75,11 +112,23 @@ socket.onmessage = (event) => {
     if (payload.startsWith("INIT")) {
         const tokens = payload.split(',');
         myClientId = tokens[1].trim();
-        document.getElementById('my-id').innerText = `내 ID: ${myClientId} (접속 및 인증 완료)`;
+        document.getElementById('my-id').innerText = `내 ID: ${myClientId}`;
         return;
     }
 
     const tokens = payload.split('|');
+
+    if (tokens[0] === 'EMOTE_BROADCAST') {
+        const [playerId, emoteIdxStr] = tokens[1].split(',');
+        const emoteIdx = parseInt(emoteIdxStr);
+        if (playerId === myClientId) {
+            const myGroup = remotePlayers.get(myClientId);
+            if (myGroup && myGroup.userData.isEmoting) return;
+        }
+        playEmoteForPlayer(playerId, emoteIdx);
+        return;
+    }
+
     if (tokens[0] === 'TICK') {
         const activePlayerIds = new Set();
         const activeBulletIds = new Set();
@@ -89,14 +138,15 @@ socket.onmessage = (event) => {
             const data = tokens[i].split(',');
             const type = data[0];
 
+            // 👤 [플레이어 데이터 처리 분기]
             if (type === 'P') {
-                // 포맷: P,id,x,y,z,hp,yaw,isCrouching
                 const [ , id, xStr, yStr, zStr, hpStr, yawStr, crouchStr] = data;
                 const posX = parseFloat(xStr);
                 const posY = parseFloat(yStr);
                 const posZ = parseFloat(zStr);
                 const playerYaw = parseFloat(yawStr);
 
+                // 💡 [복구] 서버의 crouchState 및 높이 기반 앉기 판정 동기화
                 const isCrouching = (crouchStr && crouchStr.trim() === "1") && (posY <= 0.05);
                 activePlayerIds.add(id);
 
@@ -105,15 +155,11 @@ socket.onmessage = (event) => {
                 if (!remotePlayers.has(id)) {
                     const playerGroup = new THREE.Group();
 
-                    // 껍데기 더미 메쉬 (비활성화 유지)
-                    const dummyGeo = new THREE.BoxGeometry(1.0, 1.8, 1.0);
-                    const dummyMat = new THREE.MeshStandardMaterial({ visible: false });
-                    const dummyMesh = new THREE.Mesh(dummyGeo, dummyMat);
-                    dummyMesh.position.y = 0.9;
-                    dummyMesh.name = "skin";
-                    playerGroup.add(dummyMesh);
+                    // 껍데기 메쉬 기본 설정
+                    const dummyMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1.8, 1), new THREE.MeshStandardMaterial({ visible: false }));
+                    dummyMesh.position.y = 0.9; dummyMesh.name = "skin"; playerGroup.add(dummyMesh);
 
-                    // ⭐️ [요청 반영] 히트박스 라인 비활성화 (visible: false)
+                    // 💡 [복구] 앉기 대응 가상 히트박스 와이어프레임 구조 생성 (디버깅용)
                     const hitboxGeo = new THREE.CylinderGeometry(BASE_HIT_RADIUS, BASE_HIT_RADIUS, 1.4, 8, 1, true);
                     const hitboxMat = new THREE.MeshBasicMaterial({ color: 0xff0000, wireframe: true, visible: false });
                     const hitboxMesh = new THREE.Mesh(hitboxGeo, hitboxMat);
@@ -122,23 +168,20 @@ socket.onmessage = (event) => {
 
                     scene.add(playerGroup);
                     remotePlayers.set(id, playerGroup);
-
-                    playerGroup.userData = { lastX: posX, lastZ: posZ, currentGroupState: "Idle" };
+                    playerGroup.userData = { lastX: posX, lastZ: posZ, currentGroupState: "Idle", isEmoting: false };
                 }
 
                 const targetGroup = remotePlayers.get(id);
-
                 const deltaX = posX - targetGroup.userData.lastX;
                 const deltaZ = posZ - targetGroup.userData.lastZ;
                 const distanceMoved = Math.sqrt(deltaX * deltaX + deltaZ * deltaZ);
 
-                targetGroup.userData.lastX = posX;
-                targetGroup.userData.lastZ = posZ;
-
+                targetGroup.userData.lastX = posX; targetGroup.userData.lastZ = posZ;
                 targetGroup.position.set(posX, posY, posZ);
-                targetGroup.rotation.y = playerYaw;
 
-                // 내부 가상 히트박스 데이터 위치 동기화 (화면엔 안 보임)
+                if (!targetGroup.userData.isEmoting) targetGroup.rotation.y = playerYaw;
+
+                // 💡 [복구] 앉기 상태에 따른 디버그용 히트박스 실시간 스케일/위치 다운사이징 제어
                 const hitboxWire = targetGroup.getObjectByName("hitbox_wire");
                 if (hitboxWire) {
                     if (isCrouching) {
@@ -151,136 +194,88 @@ socket.onmessage = (event) => {
                 }
 
                 if (masterAstronautModel && targetGroup.getObjectByName("skin") && targetGroup.getObjectByName("skin").isMesh) {
-                    const oldSkin = targetGroup.getObjectByName("skin");
-                    targetGroup.remove(oldSkin);
-
-                    const newSkin = masterAstronautModel.clone();
-                    newSkin.name = "skin";
-
-                    if (id === myClientId) {
-                        newSkin.traverse((child) => {
-                            if (child.isMesh) child.layers.set(1);
-                        });
-                    }
-
+                    targetGroup.remove(targetGroup.getObjectByName("skin"));
+                    const newSkin = masterAstronautModel.clone(); newSkin.name = "skin";
+                    if (id === myClientId) newSkin.traverse(c => { if (c.isMesh) c.layers.set(1); });
                     targetGroup.add(newSkin);
 
                     if (masterAstronautModel.animations && masterAstronautModel.animations.length > 0) {
-                        const mixer = new THREE.AnimationMixer(newSkin);
-                        mixer.playerId = id;
-                        mixers.push(mixer);
-
-                        const actions = {};
-                        masterAstronautModel.animations.forEach((clip) => {
-                            actions[clip.name] = mixer.clipAction(clip);
+                        const mixer = new THREE.AnimationMixer(newSkin); mixer.playerId = id;
+                        mixer.addEventListener('finished', (e) => {
+                            if (EMOTE_CLIPS.includes(e.action.getClip().name)) {
+                                targetGroup.userData.isEmoting = false;
+                                targetGroup.userData.currentGroupState = "Idle";
+                                const actions = playerActions.get(id);
+                                if (actions && actions["Idle"]) { e.action.fadeOut(0.1); actions["Idle"].reset().fadeIn(0.1).play(); }
+                            }
                         });
-
+                        mixers.push(mixer);
+                        const actions = {}; masterAstronautModel.animations.forEach(c => actions[c.name] = mixer.clipAction(c));
                         playerActions.set(id, actions);
                         if (actions["Idle"]) actions["Idle"].play();
                     }
                 }
 
-                // 실시간 모션 믹서 제어 및 루프 제한 락킹
                 const actions = playerActions.get(id);
                 if (actions) {
                     let targetState = "Idle";
-
                     if (parseInt(hpStr) <= 0) {
-                        targetState = "Death";
-                        if (actions["Death"]) {
-                            actions["Death"].setLoop(THREE.LoopOnce);
-                            actions["Death"].clampWhenFinished = true;
-                        }
+                        targetState = "Death"; targetGroup.userData.isEmoting = false;
+                        if (actions["Death"]) { actions["Death"].setLoop(THREE.LoopOnce).clampWhenFinished = true; }
+                    } else if (targetGroup.userData.isEmoting) {
+                        targetState = targetGroup.userData.currentGroupState;
+                    } else if (posY > 0.05) {
+                        targetState = distanceMoved > 0.02 ? (actions["WalkJump"] ? "WalkJump" : "Jump") : (actions["Jump"] ? "Jump" : "Idle");
+                        if (actions[targetState]) actions[targetState].setLoop(THREE.LoopOnce).clampWhenFinished = true;
                     }
-                    else if (posY > 0.05) {
-                        if (distanceMoved > 0.02) {
-                            targetState = actions["WalkJump"] ? "WalkJump" : "Jump";
-                        } else {
-                            targetState = actions["Jump"] ? "Jump" : "Idle";
-                        }
-
-                        if (actions[targetState]) {
-                            actions[targetState].setLoop(THREE.LoopOnce);
-                            actions[targetState].clampWhenFinished = true;
-                        }
-                    }
+                    // 💡 [복구] 상태 머신에서 앉은(Sitting) 애니메이션 정상 트랜지션 처리
                     else if (isCrouching) {
                         targetState = "Sitting";
-                        if (actions["Sitting"]) {
-                            actions["Sitting"].setLoop(THREE.LoopOnce);
-                            actions["Sitting"].clampWhenFinished = true;
-                        }
-                    }
-                    else {
-                        if (distanceMoved > 0.02) {
-                            targetState = actions["Walking"] ? "Walking" : "Running";
-                        } else {
-                            targetState = "Idle";
-                        }
-
-                        if (actions["Jump"]) actions["Jump"].paused = false;
-                        if (actions["WalkJump"]) actions["WalkJump"].paused = false;
-                        if (actions["Death"]) actions["Death"].paused = false;
-                        if (actions["Sitting"]) actions["Sitting"].paused = false;
+                        if (actions["Sitting"]) actions["Sitting"].setLoop(THREE.LoopOnce).clampWhenFinished = true;
+                    } else {
+                        targetState = distanceMoved > 0.02 ? (actions["Walking"] ? "Walking" : "Running") : "Idle";
                     }
 
                     if (targetGroup.userData.currentGroupState !== targetState) {
-                        const currentAction = actions[targetGroup.userData.currentGroupState];
-                        const nextAction = actions[targetState];
-
-                        if (currentAction && nextAction) {
-                            nextAction.reset();
-                            nextAction.play();
-                            currentAction.crossFadeTo(nextAction, 0.12, true);
-                        }
+                        const cur = actions[targetGroup.userData.currentGroupState]; const nxt = actions[targetState];
+                        if (cur && nxt) { nxt.reset().play(); cur.crossFadeTo(nxt, 0.12, true); }
                         targetGroup.userData.currentGroupState = targetState;
                     }
                 }
 
-                // 1인칭 카메라 눈높이 시야 보정 (백엔드 실제 판정 높이 반영)
-                if (id === myClientId) {
-                    const currentEyeHeight = isCrouching ? 0.45 : 0.85;
-                    camera.position.set(posX, posY + currentEyeHeight, posZ);
-                }
-
-                const currentSkin = targetGroup.getObjectByName("skin");
-                if (currentSkin) {
-                    currentSkin.traverse((child) => {
-                        if (child.isMesh) {
-                            child.material.transparent = true;
-                            child.material.opacity = parseInt(hpStr) <= 0 ? 0.15 : 1.0;
-                        }
-                    });
-                }
+                // 💡 [복구] 1인칭 플레이어의 시점 카메라 눈높이 실시간 다운 버정 (앉았을 때 0.45, 서있을 때 0.85)
+                if (id === myClientId) { camera.position.set(posX, posY + (isCrouching ? 0.45 : 0.85), posZ); }
             }
+            // 🚀 총알 데이터 처리 분기
             else if (type === 'B') {
-                const [ , id, xStr, yStr, zStr] = data;
+                const [ , bId, xStr, yStr, zStr] = data;
                 const posX = parseFloat(xStr);
                 const posY = parseFloat(yStr);
                 const posZ = parseFloat(zStr);
-                activeBulletIds.add(id);
+                activeBulletIds.add(bId);
 
-                if (!remoteBullets.has(id)) {
+                if (!remoteBullets.has(bId)) {
                     const geometry = new THREE.SphereGeometry(0.15, 8, 8);
                     const material = new THREE.MeshBasicMaterial({ color: 0xffff00 });
                     const sphere = new THREE.Mesh(geometry, material);
                     scene.add(sphere);
-                    remoteBullets.set(id, sphere);
+                    remoteBullets.set(bId, sphere);
                 }
-                remoteBullets.get(id).position.set(posX, posY, posZ);
+                remoteBullets.get(bId).position.set(posX, posY, posZ);
             }
         }
 
+        // 🧹 청소 루프
         for (const id of remotePlayers.keys()) {
             if (!activePlayerIds.has(id)) {
-                scene.remove(remotePlayers.get(id));
-                remotePlayers.delete(id);
-                mixers = mixers.filter(m => m.playerId !== id);
-                playerActions.delete(id);
+                scene.remove(remotePlayers.get(id)); remotePlayers.delete(id);
+                mixers = mixers.filter(m => m.playerId !== id); playerActions.delete(id);
             }
         }
-        for (const id of remoteBullets.keys()) {
-            if (!activeBulletIds.has(id)) { scene.remove(remoteBullets.get(id)); remoteBullets.delete(id); }
+        for (const bId of remoteBullets.keys()) {
+            if (!activeBulletIds.has(bId)) {
+                scene.remove(remoteBullets.get(bId)); remoteBullets.delete(bId);
+            }
         }
         document.getElementById('players-info').innerHTML = infoText;
     }
@@ -290,23 +285,25 @@ socket.onmessage = (event) => {
 // 4. Pointer Lock (FPS 마우스 시선 연동)
 // ==========================================
 renderer.domElement.addEventListener('click', () => {
-    renderer.domElement.requestPointerLock();
+    if (!isRadialMenuOpen) {
+        renderer.domElement.requestPointerLock();
+    }
 });
 
 document.addEventListener('mousemove', (event) => {
+    if (isRadialMenuOpen) return;
     if (document.pointerLockElement !== renderer.domElement) return;
+
+    const myGroup = remotePlayers.get(myClientId);
+    if (myGroup && myGroup.userData.isEmoting) return;
 
     const sensitivity = 0.0022;
     yaw -= event.movementX * sensitivity;
     pitch -= event.movementY * sensitivity;
-
     pitch = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, pitch));
 
     const target = new THREE.Vector3();
-    target.x = Math.sin(yaw) * Math.cos(pitch);
-    target.y = Math.sin(pitch);
-    target.z = Math.cos(yaw) * Math.cos(pitch);
-
+    target.x = Math.sin(yaw) * Math.cos(pitch); target.y = Math.sin(pitch); target.z = Math.cos(yaw) * Math.cos(pitch);
     camera.lookAt(camera.position.clone().add(target));
 
     if (socket.readyState === WebSocket.OPEN && myClientId) {
@@ -315,31 +312,47 @@ document.addEventListener('mousemove', (event) => {
 });
 
 // ==========================================
-// 5. 키보드 입력 및 송신계 (WASD + Shift)
+// 5. 키보드 입력 및 송신계 (WASD + Shift 웅크리기 완전 결합)
 // ==========================================
 const inputState = { w: 0, a: 0, s: 0, d: 0 };
-
 const sendInput = () => {
     if (socket.readyState !== WebSocket.OPEN || !myClientId) return;
+    const myGroup = remotePlayers.get(myClientId);
+    if (myGroup && myGroup.userData.isEmoting) return;
     socket.send(`INPUT,${inputState.w},${inputState.s},${inputState.a},${inputState.d}`);
 };
 
 window.addEventListener('keydown', (e) => {
     const key = e.key.toLowerCase();
-    if (['w','a','s','d'].includes(key)) {
-        inputState[key] = 1;
-        sendInput();
-    }
-    if (e.key === ' ' || e.code === 'Space') {
-        if (socket.readyState === WebSocket.OPEN) socket.send("JUMP");
+
+    if (key === 'g') {
+        const myGroup = remotePlayers.get(myClientId);
+        if (myGroup && myGroup.userData.isEmoting) return;
+
+        if (!isRadialMenuOpen) {
+            isRadialMenuOpen = true;
+            selectedSectorIndex = -1;
+
+            document.exitPointerLock();
+
+            radialMenuUI.style.display = 'block';
+            document.querySelectorAll('.radial-sector, .radial-center').forEach(el => el.classList.remove('active'));
+        }
+        return;
     }
 
+    if (isRadialMenuOpen) return;
+
+    const myGroup = remotePlayers.get(myClientId);
+    if (myGroup && myGroup.userData.isEmoting) return;
+
+    if (['w','a','s','d'].includes(key)) { inputState[key] = 1; sendInput(); }
+    if (e.key === ' ' || e.code === 'Space') { if (socket.readyState === WebSocket.OPEN) socket.send("JUMP"); }
+
+    // 💡 [복구 완료] Shift 누름 감지 시 공중 상태가 아닐 때 CROUCH,1 패킷 송신
     if (e.key === 'Shift') {
         e.preventDefault();
-
-        const myGroup = remotePlayers.get(myClientId);
         const isAirborne = myGroup && myGroup.position.y > 0.05;
-
         if (!isShiftPressed && !isAirborne) {
             isShiftPressed = true;
             if (socket.readyState === WebSocket.OPEN) {
@@ -351,11 +364,29 @@ window.addEventListener('keydown', (e) => {
 
 window.addEventListener('keyup', (e) => {
     const key = e.key.toLowerCase();
-    if (['w','a','s','d'].includes(key)) {
-        inputState[key] = 0;
-        sendInput();
+
+    if (key === 'g') {
+        if (isRadialMenuOpen) {
+            isRadialMenuOpen = false;
+            radialMenuUI.style.display = 'none';
+
+            if (selectedSectorIndex !== -1) {
+                playEmoteForPlayer(myClientId, selectedSectorIndex);
+                if (socket.readyState === WebSocket.OPEN && myClientId) {
+                    socket.send(`EMOTE,${selectedSectorIndex}`);
+                }
+            } else {
+                console.log("[라디알 메뉴] 조작 취소됨.");
+            }
+
+            renderer.domElement.requestPointerLock();
+        }
+        return;
     }
 
+    if (['w','a','s','d'].includes(key)) { inputState[key] = 0; sendInput(); }
+
+    // 💡 [복구 완료] Shift 키를 떼었을 때 CROUCH,0 패킷을 전송하여 정상 기립
     if (e.key === 'Shift') {
         if (isShiftPressed) {
             isShiftPressed = false;
@@ -367,41 +398,24 @@ window.addEventListener('keyup', (e) => {
 });
 
 // ==========================================
-// 6. 슈팅 패킷 전송
+// 6. 슈팅 및 루프
 // ==========================================
-renderer.domElement.addEventListener('mousedown', (event) => {
+renderer.domElement.addEventListener('mousedown', () => {
+    if (isRadialMenuOpen) return;
     if (document.pointerLockElement !== renderer.domElement) return;
-    if (socket.readyState !== WebSocket.OPEN || !myClientId) return;
+    const myGroup = remotePlayers.get(myClientId);
+    if (myGroup && myGroup.userData.isEmoting) return;
 
     camera.getWorldDirection(cameraDirection);
     socket.send(`SHOOT,${cameraDirection.x.toFixed(4)},${cameraDirection.y.toFixed(4)},${cameraDirection.z.toFixed(4)}`);
 });
 
-// ==========================================
-// 7. 메인 프레임 애니메이션 루프
-// ==========================================
 function animate() {
     requestAnimationFrame(animate);
-
-    try {
-        if (typeof clock !== 'undefined' && mixers.length > 0) {
-            const delta = clock.getDelta();
-            for (let i = 0; i < mixers.length; i++) {
-                if (mixers[i] && typeof mixers[i].update === 'function') {
-                    mixers[i].update(delta);
-                }
-            }
-        }
-    } catch (e) {
-        console.error("애니메이션 프레임 업데이트 에러 가드:", e);
+    if (mixers.length > 0) {
+        const delta = clock.getDelta();
+        for (let i = 0; i < mixers.length; i++) mixers[i].update(delta);
     }
-
     renderer.render(scene, camera);
 }
 animate();
-
-window.addEventListener('resize', () => {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-});

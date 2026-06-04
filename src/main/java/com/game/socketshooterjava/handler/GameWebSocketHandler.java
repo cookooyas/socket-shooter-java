@@ -69,13 +69,46 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 gameRoom.handleJump(player.getId());
                 break;
 
-            case "SHOOT": // SHOOT,dirX,dirY,dirZ (3차원 조준선 벡터 직접 수신)
+            case "SHOOT": // SHOOT,dirX,dirY,dirZ
                 try {
                     double dx = Double.parseDouble(tokens[1]);
                     double dy = Double.parseDouble(tokens[2]);
                     double dz = Double.parseDouble(tokens[3]);
                     gameRoom.createBullet(player.getId(), dx, dy, dz);
                 } catch (Exception ignored) {}
+                break;
+
+            // ========================================================
+            // 🎯 [추가] 감정표현 패킷 수신 및 즉시 전체 중계 (Broadcasting)
+            // ========================================================
+            case "EMOTE": // EMOTE,인덱스 (0:춤, 1:아니오, 2:네, 3:엄지척)
+                try {
+                    String emoteIdxStr = tokens[1].trim();
+
+                    // 1. [서버 동기화 가드] 감정표현 도중 관성 이동 방지를 위해 백엔드 상의 이동 속도 벡터 초기화
+                    player.setMoveForward(false);
+                    player.setMoveBackward(false);
+                    player.setMoveLeft(false);
+                    player.setMoveRight(false);
+
+                    // 2. 프론트엔드 수신 양식 규격에 맞게 메시지 조립
+                    // 포맷: EMOTE_BROADCAST|플레이어ID,애니메이션번호
+                    String broadcastMessage = String.format("EMOTE_BROADCAST|%s,%s", player.getId(), emoteIdxStr);
+                    TextMessage wsMessage = new TextMessage(broadcastMessage);
+
+                    // 3. 서버 틱 스레드를 기다리지 않고 즉시 실시간 브로드캐스트로 룸 내 전원에게 뿌림
+                    for (WebSocketSession s : sessions.values()) {
+                        if (s != null && s.isOpen()) {
+                            try {
+                                s.sendMessage(wsMessage);
+                            } catch (IOException ignored) {}
+                        }
+                    }
+
+                    log.info("[FPS 서버 - 감정표현 중계] 유저 {} -> {}번 모션 전파 완료", player.getId().substring(0, 5), emoteIdxStr);
+                } catch (Exception e) {
+                    log.error("[FPS 서버 - 에러] 잘못된 EMOTE 패킷 포맷 수신 : {}", payload);
+                }
                 break;
         }
     }
